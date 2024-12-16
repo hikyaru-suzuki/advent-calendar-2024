@@ -1,0 +1,118 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    restart: unless-stopped
+    command:
+      - --web.console.templates=/etc/prometheus/consoles
+      - --web.console.libraries=/etc/prometheus/console_libraries
+      - --storage.tsdb.retention.time=1h
+      - --config.file=/etc/prometheus/prometheus-config.yaml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+      - --web.route-prefix=/
+      - --enable-feature=exemplar-storage
+      - --web.enable-otlp-receiver
+    ports:
+      - 9090:9090
+    volumes:
+      - ./config/prometheus-config.yaml:/etc/prometheus/prometheus-config.yaml
+      - ./data/prometheus:/prometheus
+
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - plugins.security.disabled=true
+      - http.host=0.0.0.0
+      - transport.host=127.0.0.1
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=passRT%^#234
+    volumes:
+      - ./data/opensearch:/usr/share/opensearch/data
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.64.0
+    restart: unless-stopped
+    environment:
+      SPAN_STORAGE_TYPE: opensearch
+      METRICS_STORAGE_TYPE: prometheus
+    command:
+      - --query.base-path=/jaeger/ui
+      - --es.server-urls=http://opensearch:9200
+      - --prometheus.server-url=http://prometheus:9090
+      - --prometheus.query.normalize-calls=true
+      - --prometheus.query.normalize-duration=true
+    ports:
+      - 16686:16686
+    depends_on:
+      - opensearch
+      - prometheus
+
+  # Tempo runs as user 10001, and docker compose creates the volume as root.
+  # As such, we need to chown the volume in order for Tempo to start correctly.
+  tempo-init:
+    image: &tempoImage grafana/tempo:2.6.1
+    user: root
+    entrypoint:
+      - chown
+      - 10001:10001
+      - /var/tempo
+    volumes:
+      - ./data/tempo:/var/tempo
+
+  tempo:
+    image: *tempoImage
+    restart: unless-stopped
+    command: [ "-config.file=/etc/tempo.yaml" ]
+    volumes:
+      - ./config/tempo.yaml:/etc/tempo.yaml
+      - ./data/tempo:/var/tempo
+    depends_on:
+      - tempo-init
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.115.1
+    restart: unless-stopped
+    user: 0:0
+    environment:
+      HOST_FILESYSTEM: /
+      OTEL_COLLECTOR_HOST: otelcol
+      OTEL_COLLECTOR_PORT_GRPC: 4317
+      OTEL_COLLECTOR_PORT_HTTP: 4318
+    command:
+      - --config=/etc/otelcol-config.yml
+    ports:
+      - 4317:4317
+      - 4318:4318
+    volumes:
+      - /:/hostfs:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./config/otelcol-config.yml:/etc/otelcol-config.yml
+    depends_on:
+      - jaeger
+      - tempo
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    restart: unless-stopped
+    volumes:
+      - ./config/grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: true
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: true
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor metricsSummary
+      GF_INSTALL_PLUGINS: https://storage.googleapis.com/integration-artifacts/grafana-exploretraces-app/grafana-exploretraces-app-latest.zip;grafana-traces-app
+    ports:
+      - 3000:3000
+
+  postgresql:
+    image: postgres:16.6
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - 5432:5432
+    volumes:
+      - ./data/postgresql:/var/lib/postgresql/data
