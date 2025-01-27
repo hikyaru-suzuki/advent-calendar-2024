@@ -24,12 +24,12 @@ func runLoadTest(
 	userSpawnScenario *userSpawnScenario,
 	articleScenario *articleScenario,
 ) error {
-	log.Println("初期化をシナリオを実行します。")
+	log.Println("初期化シナリオを実行します。")
 	articleIDs, err := initScenario.Run(ctx, e)
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	log.Println("初期化をシナリオを実行しました。")
+	log.Println("初期化シナリオを実行しました。")
 
 	var workers sync.WaitGroup
 	defer workers.Wait()
